@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Meet Person Float",
+  "version": "1.0.0",
+  "description": "Choose one Google Meet participant for a movable, always-on-top video window.",
+  "minimum_chrome_version": "116",
+  "permissions": ["activeTab", "scripting"],
+  "action": {
+    "default_title": "Float a Google Meet participant",
+    "default_popup": "popup.html"
+  }
+}

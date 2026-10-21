@@ -1,12 +1,13 @@
 (() => {
   "use strict";
   if (location.origin !== "https://meet.google.com") return;
-  const key = "__meetPersonFloatV2";
+  const key = "__meetPersonFloatV3";
   if (window[key]) {
     window[key].showPicker();
     return;
   }
   window.__meetPersonFloatV1?.stopFloating();
+  window.__meetPersonFloatV2?.stopFloating();
   document.getElementById("meet-person-float-picker")?.remove();
 
   let picker = null;
@@ -31,128 +32,69 @@
   }
 
   function stopFloating() {
-    if (floating && !floating.closed) floating.close();
+    return floating?.stop();
   }
 
   async function openPerson(id) {
     if (opening) return;
-    if (!window.documentPictureInPicture) {
-      picker.message.textContent = "This needs desktop Chrome 116 or newer with picture-in-picture enabled.";
+    if (!document.pictureInPictureEnabled) {
+      picker.message.textContent = "Chrome's video picture-in-picture is unavailable. Check that picture-in-picture is allowed for Meet.";
+      return;
+    }
+    const matches = videosFor(id);
+    const source = matches.length === 1 ? matches[0] : null;
+    if (!source || source.readyState < 2 || !source.srcObject?.getVideoTracks().some(track => track.readyState === "live" && track.enabled && !track.muted)) {
+      picker.message.textContent = "This person's video is not ready. Make sure their camera is on, pin their tile in Meet, then try again.";
       return;
     }
     opening = true;
+    const wasDisabled = source.disablePictureInPicture;
+    let cleanup = null;
     try {
-      stopFloating();
-      // Called directly by the tile click, preserving Chrome's required user gesture.
-      const pip = await window.documentPictureInPicture.requestWindow({ width: 384, height: 278 });
-      floating = pip;
+      await stopFloating();
+      source.disablePictureInPicture = false;
+      // Native video PiP has no HTML header or website title bar. Chrome owns its
+      // hover controls and window frame. Keep Meet's original element and tracks.
+      await source.requestPictureInPicture();
       dismissPicker();
-      const doc = pip.document;
-      doc.title = "Selected person · Meet";
-      const style = doc.createElement("style");
-      style.textContent = `
-        * { box-sizing: border-box; }
-        html, body { margin: 0; height: 100%; background: #101721; color: #eff5fb; font: 13px system-ui, sans-serif; }
-        body { display: flex; flex-direction: column; }
-        header { flex: none; display: flex; align-items: center; justify-content: space-between; padding: 9px 12px; background: #192330; gap: 8px; }
-        header span { font-size: 12px; font-weight: 600; }
-        button { border: 1px solid #506175; border-radius: 6px; background: transparent; color: inherit; padding: 5px 9px; cursor: pointer; }
-        main { flex: 1; min-height: 0; position: relative; display: grid; place-items: center; }
-        video { width: 100%; height: 100%; object-fit: contain; }
-        #status { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; background: #101721; line-height: 1.6; }
-        #status[hidden] { display: none; }
-      `;
-      doc.head.append(style);
-      const header = doc.createElement("header");
-      const title = doc.createElement("span");
-      title.textContent = "Selected person";
-      const close = doc.createElement("button");
-      close.type = "button";
-      close.textContent = "Close";
-      header.append(title, close);
-      const main = doc.createElement("main");
-      const mirror = doc.createElement("video");
-      mirror.autoplay = true;
-      mirror.playsInline = true;
-      mirror.setAttribute("aria-label", "Selected participant video");
-      mirror.muted = true;
-      const status = doc.createElement("div");
-      status.id = "status";
-      status.setAttribute("role", "status");
-      status.textContent = "Waiting for this person's video…";
-      main.append(mirror, status);
-      doc.body.append(header, main);
-      close.addEventListener("click", () => pip.close());
-      let currentSource = null;
-      let currentTracks = [];
       let disposed = false;
-
-      function unavailable(message) {
-        status.textContent = message;
-        status.hidden = false;
-        if (mirror.srcObject) {
-          mirror.srcObject = null;
-          mirror.load();
-        }
-        currentSource = null;
-        currentTracks = [];
-      }
-
-      function sync() {
+      let timer = null;
+      let observer = null;
+      cleanup = () => {
         if (disposed) return;
+        disposed = true;
+        clearInterval(timer);
+        observer?.disconnect();
+        source.removeEventListener("leavepictureinpicture", cleanup);
+        window.removeEventListener("pagehide", stop);
+        if (wasDisabled && !source.disablePictureInPicture) source.disablePictureInPicture = true;
+        if (floating?.source === source) floating = null;
+        // No pause, DOM moves, srcObject writes, or track.stop(): Meet owns playback.
+      };
+      const stop = () => {
+        cleanup();
+        if (document.pictureInPictureElement === source) return document.exitPictureInPicture().catch(() => {});
+      };
+      floating = { source, stop };
+      function guardIdentity() {
         const matches = videosFor(id);
-        if (matches.length !== 1) {
-          unavailable(matches.length > 1
-            ? "This person has multiple video tiles. Return to Meet and choose again when only their camera tile is visible."
-            : "Waiting for this person's video. If needed, return to Meet and pin their tile.");
-          return;
-        }
-        const source = matches[0];
-        const stream = source.srcObject;
-        const tracks = stream instanceof MediaStream ? stream.getVideoTracks().filter(track => track.readyState === "live") : [];
-        if (!tracks.length || tracks.every(track => !track.enabled || track.muted)) {
-          unavailable("This person's camera is off or their video is unavailable.");
-          return;
-        }
-        const changed = source !== currentSource || tracks.length !== currentTracks.length || tracks.some((track, i) => track !== currentTracks[i]);
-        if (changed) {
-          currentSource = source;
-          currentTracks = tracks;
-          // Share video tracks without moving Meet's element or copying meeting audio.
-          mirror.srcObject = new MediaStream(tracks);
-          status.textContent = "Connecting to this person's video…";
-          status.hidden = false;
-          mirror.play().catch(() => {
-            if (!disposed) {
-              status.textContent = "Click here to resume this person's video.";
-              status.hidden = false;
-            }
-          });
+        const tracks = source.srcObject?.getVideoTracks() || [];
+        if (!source.isConnected || participant(source) !== id || matches.length !== 1 || matches[0] !== source || !tracks.some(track => track.readyState === "live" && track.enabled && !track.muted)) {
+          // Close rather than accidentally follow a recycled active-speaker tile.
+          stop();
         }
       }
-
-      mirror.addEventListener("playing", () => { status.hidden = true; });
-      mirror.addEventListener("waiting", () => { status.textContent = "Waiting for video…"; status.hidden = false; });
-      status.addEventListener("click", () => { mirror.play().catch(() => {}); });
-      // Run in the visible PiP window, not the backgrounded Meet document.
-      const timer = pip.setInterval(sync, 300);
-      const observer = new MutationObserver(sync);
+      source.addEventListener("leavepictureinpicture", cleanup, { once: true });
+      window.addEventListener("pagehide", stop, { once: true });
+      observer = new MutationObserver(guardIdentity);
       observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-participant-id"] });
-      const onPageHide = () => pip.close();
-      window.addEventListener("pagehide", onPageHide, { once: true });
-      pip.addEventListener("pagehide", () => {
-        disposed = true;
-        pip.clearInterval(timer);
-        observer.disconnect();
-        mirror.srcObject = null;
-        window.removeEventListener("pagehide", onPageHide);
-        if (floating === pip) floating = null;
-        // Never stop tracks: Meet owns them and still needs them for the call.
-      }, { once: true });
-      sync();
+      timer = setInterval(guardIdentity, 300);
+      guardIdentity();
     } catch (error) {
+      cleanup?.();
+      if (wasDisabled) source.disablePictureInPicture = true;
       showPicker();
-      picker.message.textContent = `Could not open the floating window: ${error.message}. Click the person's tile to retry.`;
+      picker.message.textContent = `Could not open the floating video: ${error.message}. Click the person's tile to retry.`;
     } finally {
       opening = false;
     }
@@ -228,7 +170,7 @@
         if (!visible.has(video)) { button.remove(); buttons.delete(video); }
       }
       message.textContent = visible.size
-        ? "Click a highlighted video. Drag the floating window by its title bar and resize it from an edge. Press Esc to cancel."
+        ? "Click a highlighted video. Drag the floating video to move it and resize it from an edge. Press Esc to cancel."
         : "No selectable camera tiles found. Join a call, make the person's camera tile visible, and pin it in Meet if needed.";
     }
     const onKey = event => { if (event.key === "Escape") { event.stopPropagation(); dismissPicker(); } };

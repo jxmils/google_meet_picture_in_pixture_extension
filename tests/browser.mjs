@@ -1,6 +1,6 @@
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,9 @@ try {
   }));
   console.log('Loading fixture');
   await page.goto('https://meet.google.com/test-fixture');
+  const windowSession = await context.newCDPSession(page);
+  const mainWindow = await windowSession.send('Browser.getWindowForTarget');
+  await windowSession.send('Browser.setWindowBounds', {windowId: mainWindow.windowId, bounds: {width: 1200, height: 900}});
   console.log('Creating camera streams');
   await page.evaluate(() => {
     window.testSources = {};
@@ -48,6 +51,7 @@ try {
       }, 200);
       const tile = document.createElement('section');
       tile.dataset.participantId = id;
+      tile.dataset.participantName = id;
       const video = document.createElement('video');
       video.autoplay = true; video.muted = true; video.srcObject = stream;
       tile.append(document.createTextNode(id), video);
@@ -58,34 +62,34 @@ try {
     return Promise.all([addTile('Alice', '#116655'), addTile('Bob', '#663366')]);
   });
   console.log('Streams playing');
-  const prefs = JSON.parse(await readFile(path.join(profile, 'Default', 'Preferences'), 'utf8').catch(() => '{}'));
-  let id = Object.entries(prefs.extensions?.settings || {}).find(([, v]) => v.path === root)?.[0];
-  if (!id) {
-    const management = await context.newPage();
-    await management.goto('chrome://extensions');
-    id = await management.evaluate(() => new Promise(resolve => chrome.developerPrivate.getExtensionsInfo({includeDisabled: false}, entries => resolve(entries.find(e => e.name === 'Meet Person Float')?.id))));
-    await management.close();
-  }
+  const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker');
+  const id = new URL(worker.url()).host;
   assert.ok(id, 'Unpacked extension loaded');
-  record('Chrome loaded the unpacked extension');
-  // Loading a popup URL directly does not grant activeTab. Inject the exact bundled
-  // picker here; the toolbar's user-granted permission is a separate manual check.
-  await page.evaluate(await readFile(process.env.PICKER_PATH || path.join(root, 'picker.js'), 'utf8'));
-  await page.locator('#meet-person-float-picker .tile').first().waitFor();
+  const registration = await worker.evaluate(async () => ({manifest: chrome.runtime.getManifest(), commands: await chrome.commands.getAll()}));
+  assert.deepEqual(registration.manifest.host_permissions, ['https://meet.google.com/*']);
+  assert.ok(registration.commands.find(command => command.name === 'choose-person' && command.shortcut));
+  record('Chrome loaded the extension and registered its browser shortcut with Meet-only site access');
+  await page.waitForFunction(() => !!window.__meetPersonFloatV5);
+  assert.equal(await page.locator('#meet-person-float-picker').count(), 0);
+  await page.keyboard.press('1');
+  await page.locator('#meet-person-float-picker .person').first().waitFor();
+  assert.equal(await page.getByRole('button', {name: 'Float Alice', exact: true}).count(), 1);
+  assert.equal(await page.getByRole('button', {name: 'Float Bob', exact: true}).count(), 1);
+  record('Plain 1 opens a named participant list through the real automatic content script');
   record('Bundled picker highlights both participant tiles');
   assert.equal(await page.locator('#meet-person-float-picker .tile').count(), 2);
   await page.evaluate(() => {
     const copy = testSources.Alice.video.cloneNode(true);
     copy.style.display = 'none'; copy.id = 'hidden-copy';
     testSources.Alice.tile.append(copy);
-    (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker();
+    window.__meetPersonFloatV5.showPicker();
   });
   assert.equal(await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').count(), 1, 'A hidden duplicate must not remove the visible choice');
   record('Hidden duplicate video does not suppress the person selector');
   await page.evaluate(() => document.getElementById('hidden-copy').remove());
   async function chooseAlice() {
     await page.bringToFront();
-    await page.evaluate(() => (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker());
+    await page.evaluate(() => window.__meetPersonFloatV5.showPicker());
     await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().click();
     await page.waitForFunction(() => document.pictureInPictureElement === testSources.Alice.video);
   }
@@ -120,7 +124,7 @@ try {
   await chooseAlice();
   await page.evaluate(() => { const clone = testSources.Alice.tile.cloneNode(true); clone.id = 'duplicate'; document.getElementById('tiles').append(clone); });
   assert.equal(await page.evaluate(() => document.pictureInPictureElement === testSources.Alice.video), true);
-  await page.evaluate(() => (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker());
+  await page.evaluate(() => window.__meetPersonFloatV5.showPicker());
   assert.equal(await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').count(), 2);
   await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().click();
   assert.equal(await page.evaluate(() => document.pictureInPictureElement === testSources.Alice.video), true);
@@ -142,7 +146,7 @@ try {
   // An unavailable source must explain the failure across later refresh ticks.
   await page.evaluate(() => {
     testSources.Alice.video.srcObject = null;
-    (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker();
+    window.__meetPersonFloatV5.showPicker();
   });
   await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().click();
   await new Promise(resolve => setTimeout(resolve, 700));
@@ -167,7 +171,7 @@ try {
 
   await page.evaluate(() => {
     testSources.Alice.video.requestPictureInPicture = () => Promise.reject(new DOMException('Test permission rejection', 'NotAllowedError'));
-    (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker();
+    window.__meetPersonFloatV5.showPicker();
   });
   await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().click();
   await page.waitForFunction(() => document.getElementById('meet-person-float-picker')?.shadowRoot.querySelector('[role="status"]').textContent.includes('fresh click'));
@@ -182,7 +186,7 @@ try {
   await page.evaluate(() => {
     window.exitCalls = 0;
     document.exitPictureInPicture = () => { window.exitCalls++; throw new Error('Should switch directly'); };
-    (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker();
+    window.__meetPersonFloatV5.showPicker();
   });
   await page.locator('#meet-person-float-picker .tile[data-participant="Bob"]').click();
   await page.waitForFunction(() => document.pictureInPictureElement === testSources.Bob.video);
@@ -192,7 +196,7 @@ try {
   await page.evaluate(() => document.exitPictureInPicture());
 
   // Keep the pressed button stable while Meet changes the source under it.
-  await page.evaluate(() => (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker());
+  await page.evaluate(() => window.__meetPersonFloatV5.showPicker());
   let box = await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
@@ -218,7 +222,7 @@ try {
   await page.evaluate(() => document.exitPictureInPicture());
 
   await page.evaluate(() => document.body.requestFullscreen());
-  await page.evaluate(() => (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker());
+  await page.evaluate(() => window.__meetPersonFloatV5.showPicker());
   assert.equal(await page.evaluate(() => document.getElementById('meet-person-float-picker').matches(':popover-open')), true);
   await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().click();
   await page.waitForFunction(() => document.pictureInPictureElement === testSources.Alice.video);
@@ -229,7 +233,7 @@ try {
   await page.evaluate(() => {
     const original = HTMLElement.prototype.showPopover;
     HTMLElement.prototype.showPopover = () => { throw new Error('Test popover failure'); };
-    try { (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker(); }
+    try { window.__meetPersonFloatV5.showPicker(); }
     finally { HTMLElement.prototype.showPopover = original; }
   });
   assert.equal(await page.evaluate(() => document.getElementById('meet-person-float-picker').hasAttribute('popover')), false);
@@ -237,10 +241,84 @@ try {
   await page.waitForFunction(() => document.pictureInPictureElement === testSources.Alice.video);
   record('Fixed-position fallback remains clickable if the top-layer API fails');
   await page.evaluate(() => document.exitPictureInPicture());
-  await page.evaluate(() => (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker());
+  await page.evaluate(() => window.__meetPersonFloatV5.showPicker());
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('#meet-person-float-picker').count(), 0);
   record('Escape dismisses the picker');
+
+  await page.evaluate(() => {
+    const input = document.createElement('input'); input.id = 'chat-test';
+    document.body.append(input); input.focus();
+  });
+  await page.keyboard.press('1');
+  assert.equal(await page.locator('#chat-test').inputValue(), '1');
+  assert.equal(await page.locator('#meet-person-float-picker').count(), 0);
+  await page.evaluate(() => document.getElementById('chat-test').remove());
+  record('Typing 1 into an input does not open the participant list');
+  await page.evaluate(() => {
+    const editor = document.createElement('div'); editor.id = 'editor-test'; editor.contentEditable = 'true';
+    editor.setAttribute('role', 'textbox'); document.body.append(editor); editor.focus();
+  });
+  await page.keyboard.press('1');
+  assert.equal(await page.locator('#editor-test').textContent(), '1');
+  assert.equal(await page.locator('#meet-person-float-picker').count(), 0);
+  await page.evaluate(() => document.getElementById('editor-test').remove());
+  record('Typing 1 into a rich-text chat editor does not open the participant list');
+
+  await page.keyboard.press('1');
+  await page.getByRole('searchbox', {name: 'Find a person'}).fill('Bob');
+  assert.equal(await page.locator('#meet-person-float-picker .person:not([hidden])').count(), 1);
+  await page.getByRole('button', {name: 'Float Bob', exact: true}).click();
+  await page.waitForFunction(() => document.pictureInPictureElement === testSources.Bob.video);
+  record('Filtering the named list selects the exact chosen person');
+  await page.evaluate(() => document.exitPictureInPicture());
+  await page.keyboard.press('1');
+  await page.getByRole('button', {name: 'Float Alice', exact: true}).press('Enter');
+  await page.waitForFunction(() => document.pictureInPictureElement === testSources.Alice.video);
+  record('Enter on a participant row opens native video PiP with a real keyboard gesture');
+  await page.evaluate(() => document.exitPictureInPicture());
+
+  await page.evaluate(() => {
+    testSources.Alice.tile.removeAttribute('data-participant-name');
+    const control = document.createElement('button'); control.textContent = 'mic_off'; control.id = 'control-test';
+    testSources.Alice.tile.prepend(control);
+  });
+  await page.keyboard.press('1');
+  assert.equal(await page.getByRole('button', {name: 'Float Alice', exact: true}).count(), 1);
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => { testSources.Alice.tile.dataset.participantName = 'Alice'; document.getElementById('control-test').remove(); });
+  record('Name fallback reads tile labels without including microphone control text');
+
+  await worker.evaluate(async () => {
+    const [tab] = await chrome.tabs.query({url: 'https://meet.google.com/test-fixture'});
+    await handleCommand('choose-person', tab);
+  });
+  await page.locator('#meet-person-float-picker .person').first().waitFor();
+  record('Registered command handler injects and opens the list through real extension APIs');
+  await page.keyboard.press('Escape');
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'pictureInPictureEnabled', {configurable: true, value: false});
+  });
+  await page.keyboard.press('1');
+  await page.getByRole('button', {name: 'Float Alice', exact: true}).click();
+  await new Promise(resolve => setTimeout(resolve, 700));
+  assert.match(await page.locator('#meet-person-float-picker [role="status"]').textContent(), /cannot override browser or workplace restrictions/);
+  assert.equal(await page.evaluate(() => !!document.pictureInPictureElement), false);
+  await page.evaluate(() => { delete document.pictureInPictureEnabled; });
+  record('Disabled native PiP leaves the list usable and explains that restrictions cannot be overridden');
+
+  await page.evaluate(() => {
+    testSources.Alice.video.requestPictureInPicture = () => Promise.reject(new DOMException('Blocked by a test Permissions Policy', 'SecurityError'));
+  });
+  await page.getByRole('button', {name: 'Float Alice', exact: true}).click();
+  await page.waitForFunction(() => document.getElementById('meet-person-float-picker')?.shadowRoot.querySelector('[role="status"]').textContent.includes('SecurityError'));
+  assert.match(await page.locator('#meet-person-float-picker [role="status"]').textContent(), /cannot override/);
+  await page.evaluate(() => { delete testSources.Alice.video.requestPictureInPicture; });
+  await page.getByRole('button', {name: 'Float Alice', exact: true}).click();
+  await page.waitForFunction(() => document.pictureInPictureElement === testSources.Alice.video);
+  await page.evaluate(() => document.exitPictureInPicture());
+  record('Policy rejection shows the actual error code and permits retry after the restriction is resolved');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ browser: context.browser()?.version(), checks, pageErrors: errors }, null, 2));
 } finally {

@@ -16,7 +16,10 @@ button.addEventListener("click", async () => {
     const [check] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       world: "MAIN",
-      func: () => Boolean(document.getElementById("meet-person-float-picker")?.shadowRoot?.querySelector(".panel"))
+      func: () => {
+        window.__meetPersonFloatV5?.showPicker();
+        return Boolean(document.getElementById("meet-person-float-picker")?.shadowRoot?.querySelector(".panel"));
+      }
     });
     if (!check?.result) throw new Error("The picker could not be displayed. Check that the latest extension is loaded, then try again.");
     window.close();

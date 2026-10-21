@@ -1,49 +1,54 @@
 # Meet Person Float
 
-A personal Chrome extension for Google Meet. Choose one person's camera tile and open it in a movable, resizable, always-on-top video window. Version 1.0.3 uses Chrome's native **video** picture-in-picture: no custom header, browser tabs, address bar, or persistent `meet.google.com` document-window header. Chrome controls may appear when you hover; extensions cannot style or permanently hide browser-owned controls.
+Choose a Google Meet participant from a searchable list and open their video in a movable, resizable, always-on-top window. Version 1.1.0 adds the **1** keyboard picker and **Alt+Shift+1** Chrome shortcut. The floating video uses Chrome's native video picture-in-picture, with no custom header or persistent document-window address bar. Chrome owns its hover controls.
 
-## Install in your Chrome profile
+## Install or update
 
-1. Download this repository using **Code → Download ZIP** and unzip it. Keep the extracted folder somewhere permanent.
+1. Unzip the package and keep the extracted folder somewhere permanent.
 2. In the Chrome profile where you use Meet, open `chrome://extensions`.
-3. Enable **Developer mode**, then click **Load unpacked**.
-4. Select the extracted folder containing `manifest.json`.
-5. Use Chrome's puzzle-piece menu to pin **Meet Person Float** to the toolbar.
+3. Enable **Developer mode** and choose **Load unpacked**. Select the folder containing `manifest.json`.
+4. If updating an existing copy, replace its files and click its reload arrow. Approve the added **meet.google.com** site access if Chrome asks. Alternatively, remove the old copy and load the new folder.
+5. Pin **Meet Person Float** through Chrome's puzzle-piece menu if desired.
 
-No Web Store publication or Google account sign-in is required for the extension. Loading it installs it in that Chrome profile only; repeat installation for any additional profile you want to use.
+No extension account or Web Store publication is needed. Installation applies to that Chrome profile.
 
-### Updating during a call
+## Keyboard picker
 
-Replace the files in the folder you originally loaded, then click the extension's reload arrow at `chrome://extensions`. Alternatively, remove the old extension and load the freshly extracted folder. Return to your existing Meet tab, click **Choose a person**, and select their video again. Refreshing the meeting page or leaving the call is not required.
+- On newly opened Meet pages, click the meeting page and press **1** to open the searchable participant list. It does not intercept typing in chat, search boxes, or rich-text editors.
+- In a call that was already open when the extension was installed or updated, press **Alt+Shift+1** once, or click the extension → **Choose a person**. This activates the picker in the existing page without refreshing or leaving the call. Plain **1** then works there too.
+- Click a person's name or focus their row and press **Enter** to open their floating video. You can also click a highlighted camera tile.
+- Press **Esc** or **Cancel** to close the list. Drag the floating video to move it; drag its edges to resize. Keep the Meet tab open while switching tabs, using other apps, or minimizing the main Chrome window.
+- Only currently visible camera tiles are listed. Pin a missing person's tile in Meet first. Names are read from Meet's tile labels; if no name can be read, a numbered video label is shown. Repeated tiles for the same participant have a video number to distinguish them.
+- If the Chrome shortcut is unassigned or conflicts with another extension, open `chrome://extensions/shortcuts` and assign **Open the Google Meet participant list**. The shortcut works while Chrome has focus. On Mac, Alt means Option.
 
-## Use it
+## If Windows or a work laptop refuses the floating video
 
-1. Join a call at `https://meet.google.com` and make the person's camera tile visible. Pin their tile in Meet to help keep their video available.
-2. Click the extension icon → **Choose a person** → **Float this person** on their video.
-3. Drag the floating video to move it; drag an edge to resize. Leave the Meet tab open. You can switch tabs, work in another app, or minimize the main Chrome window.
-4. To switch people, return to Meet and choose again. Chrome's native close control stops floating the video without ending your call.
+The list opens inside the Meet page; it does not require a separate popup. The floating video uses native picture-in-picture. A browser or workplace restriction can still prevent that native window from opening. The extension cannot force Chrome or Windows to allow it and does not change company policies or browser security settings.
 
-Disable Meet's own **Settings → General → Automatic picture-in-picture** if it replaces this extension's floating video. Chrome permits only one picture-in-picture window at a time.
+When a request is rejected, the list stays available and shows the error name and message, including `NotAllowedError`, `SecurityError`, or `NotSupportedError`. A loading video can be retried after its picture appears. If the error persists on a managed laptop, provide that message to IT so they can check whether that Chrome session allows picture-in-picture. A new selection shortcut cannot override such a restriction.
 
-## Screen sharing and limitations
+## Permissions and privacy
 
-- This changes your local view. It does not change other participants' own meeting layouts.
-- A full-display screen share can include the floating video. Share a specific tab or application window if you want to keep it out of the presentation; confirm the sharing preview.
-- The native video window has no persistent document header. Chrome owns its hover controls, borders, placement, and resize behavior; the extension cannot remove every browser or OS affordance.
-- Desktop Chrome 116+ is required. OS full-screen apps, virtual desktops, and minimizing every application window can affect visibility. Closing Meet or quitting Chrome closes its floating video.
-- The extension follows the exact video tile you clicked and checks its participant identity. Hidden copies or other tiles for the same participant do not prevent selection. If the original video tile disappears, is reassigned to another identity, or has no enabled live video track, the floating video closes. It does not automatically substitute another speaker or reopen itself. Pin the person's tile and choose them again if needed.
-- Meet must still supply that person's stream. The extension cannot force Google's servers to deliver a paused stream. Meet's internal page structure may change in future and require an extension update.
-- Camera tiles need a `data-participant-id`. Unsupported tiles are omitted from the picker. Select the person's camera, not their shared screen; camera-off avatars are not supported.
+API permissions are `activeTab` and `scripting`. Version 1.1.0 also declares site access and an automatic content script **only for `https://meet.google.com/*`**, so the plain **1** shortcut works before clicking the toolbar icon. Chrome may describe that site permission as reading and changing data on Meet. The extension does not run on other websites.
 
-## Privacy
+Participant labels stay in the page. There are no analytics, external dependencies, network requests, recording, or persistent participant storage. The extension uses Meet's existing video element without creating duplicate playback or stopping call tracks. Meeting audio and camera/microphone controls remain with Meet. A video's disabled-picture-in-picture hint is temporarily cleared for an explicit selection and restored when the floating video closes. No additional Windows camera, microphone, screen-recording, Accessibility, or administrator permission is requested.
 
-Only `activeTab` and `scripting` permissions are requested. The extension runs on Google Meet when you click its button. It has no analytics, external dependencies, network requests, recording, or persistent participant storage. It uses Meet's existing video element without creating additional playback or stopping meeting tracks. Meeting audio and camera/microphone controls remain with Meet. A video's disabled-picture-in-picture hint is temporarily cleared for your explicit selection and restored when the floating video closes.
+## Limitations
+
+- This changes your local view, not other participants' meeting layouts. Whole-display sharing can include the floating window; choose a tab or specific application window to keep it out of a presentation and confirm the preview.
+- Chrome 116+ on desktop is required. OS fullscreen apps, virtual desktops, managed settings, and minimizing every application window can affect visibility. Closing Meet or quitting Chrome closes its floating video.
+- The exact selected video element and participant ID are tracked. If it is removed, reassigned to another identity, or has no enabled live video track, the floating video closes instead of following another speaker. Pin the person and choose again if needed.
+- Meet must provide the stream. The extension cannot force Google's servers to send a paused video. Meet's internal page structure and participant-label markup may change and require updates.
+- Camera tiles need `data-participant-id`. Camera-off avatars and unsupported tiles cannot supply a floating video. Select a camera rather than a shared screen.
+- If Meet's own automatic picture-in-picture replaces the chosen video, adjust Meet's **Settings → General → Automatic picture-in-picture**. Chrome permits one picture-in-picture window at a time.
 
 ## Verification
 
-Twenty-four browser checks passed in Chrome for Testing 153.0.8010.12 on macOS. Tests enforce Trusted Types, use synthetic Meet-shaped participant tiles, and provide real local video streams. They cover native video PiP, minimization, identity changes, hidden/visible duplicate tiles, readiness and persistent error feedback, retrying rejected requests, temporary track mutes, switching without an exit wait, layout changes during clicks, fullscreen selection, top-layer fallback, and cleanup. The hidden-duplicate regression fails against version 1.0.2 and passes against version 1.0.3. The minimized-window check verifies native PiP remains active with a live source; it does not prove Google's servers will continue sending a live meeting stream. The toolbar permission flow and current live Meet rollout still need a live-call check after installation.
+Thirty-three browser checks passed in Chrome for Testing 153.0.8010.12 on macOS, using synthetic Meet-shaped tiles and real local video streams under enforced Trusted Types. Checks cover automatic content-script injection, plain **1**, named filtering, keyboard selection, ignoring text input, command registration and the service-worker command handler through real extension APIs, restriction feedback, native video PiP, minimization, duplicate/changed/moving tiles, retries, fullscreen, fallback positioning, and cleanup.
 
-To run the browser checks, install Node.js, then run:
+These checks do not establish behavior on the user's managed Windows laptop, Windows OS-level shortcut delivery, the toolbar permission flow, every live Meet rollout, or continued video delivery from Google's servers. The browser shortcut is registered in the test browser; the command handler is invoked through the worker to test its logic and injection separately from OS key delivery.
+
+To run the checks with Node.js:
 
 ```sh
 npm install
@@ -51,8 +56,6 @@ npx playwright install chromium
 npm test
 ```
 
-Tests open a disposable Chrome profile and remove it afterward. On a Linux machine without a desktop session, run `xvfb-run npm test`. Set `CHROME_EXECUTABLE` to use an existing Chrome for Testing binary. No build step or npm installation is needed to use the extension itself.
+Tests use and remove a disposable browser profile. On Linux without a desktop, use `xvfb-run npm test`. Set `CHROME_EXECUTABLE` to use an existing Chrome for Testing binary. No Node.js, npm, or build step is needed to use the extension.
 
-Version 1.0.1 fixed the picker failing silently under Trusted Types enforcement. Version 1.0.2 preserved that fix and replaced the document window with native video PiP. Version 1.0.3 fixes intermittent selection: it requests PiP directly within the click, follows the exact video element, keeps errors visible for retry, and protects selection during layout changes and fullscreen use.
-
-See the [Picture-in-Picture specification](https://www.w3.org/TR/picture-in-picture/) and [Meet's picture-in-picture guide](https://support.google.com/meet/answer/13665919?hl=en).
+References: [Chrome keyboard commands](https://developer.chrome.com/docs/extensions/reference/api/commands), [content-script site access](https://developer.chrome.com/docs/extensions/reference/manifest/content-scripts), and [native picture-in-picture](https://developer.chrome.com/blog/watch-video-using-picture-in-picture).

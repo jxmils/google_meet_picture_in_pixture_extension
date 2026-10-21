@@ -26,6 +26,7 @@ page.on('pageerror', error => errors.push(error.message));
 try {
   await page.route('https://meet.google.com/**', route => route.fulfill({
     contentType: 'text/html',
+    headers: { 'Content-Security-Policy': "require-trusted-types-for 'script'; trusted-types 'none'" },
     body: '<!doctype html><title>Local Meet fixture</title><style>body{background:#202124;color:white;font:18px system-ui}section{display:inline-block;margin:20px}video{display:block;width:320px;height:200px;background:black}</style><h1>Local synthetic call</h1><div id="tiles"></div>'
   }));
   console.log('Loading fixture');
@@ -69,7 +70,7 @@ try {
   record('Chrome loaded the unpacked extension');
   // Loading a popup URL directly does not grant activeTab. Inject the exact bundled
   // picker here; the toolbar's user-granted permission is a separate manual check.
-  await page.addScriptTag({path: path.join(root, 'picker.js')});
+  await page.evaluate(await readFile(path.join(root, 'picker.js'), 'utf8'));
   await page.locator('#meet-person-float-picker .tile').first().waitFor();
   record('Bundled picker highlights both participant tiles');
   assert.equal(await page.locator('#meet-person-float-picker .tile').count(), 2);
@@ -122,7 +123,7 @@ try {
   await page.waitForFunction(() => !documentPictureInPicture.window);
   assert.equal(await page.evaluate(() => testSources.Alice.stream.getVideoTracks()[0].readyState), 'live');
   record('Closing the float leaves Meet camera tracks live');
-  await page.evaluate(() => window.__meetPersonFloatV1.showPicker());
+  await page.evaluate(() => window.__meetPersonFloatV2.showPicker());
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('#meet-person-float-picker').count(), 0);
   record('Escape dismisses the picker');

@@ -12,6 +12,10 @@ A personal Chrome extension for Google Meet. Click one person's camera tile to o
 
 No Web Store publication or Google account sign-in is required for the extension. Loading it installs it in that Chrome profile only; repeat installation for any additional profile you want to use.
 
+### Updating during a call
+
+Version 1.0.1 fixes the picker failing silently when a page enforces Trusted Types. Replace the files in the folder you originally loaded, then click the extension's reload arrow at `chrome://extensions`. Alternatively, remove the old extension and load the freshly extracted folder. Return to the existing Meet tab and click **Choose a person** again. Refreshing the meeting page or leaving the call is not required.
+
 ## Use it
 
 1. Join a call at `https://meet.google.com` and make the person's camera tile visible. Pin their tile in Meet to help keep their video available.
@@ -36,7 +40,7 @@ Only `activeTab` and `scripting` permissions are requested. The extension runs o
 
 ## Verification
 
-Thirteen browser checks passed in Chrome for Testing 153.0.8010.12 on macOS. Tests use synthetic Meet-shaped participant tiles and real local video streams. They cover extension loading, selection, native picture-in-picture, background/minimized-window survival, stream replacement, identity reuse, disappearing participants, ambiguous identity, disabled cameras, and cleanup. The minimized-window check verifies the floating window remains open with an active stream; it does not prove Google's servers will continue sending a live meeting stream. These fixtures do not establish compatibility with every live Meet rollout. The toolbar permission flow and a live call should be checked after installation.
+Thirteen browser checks passed in Chrome for Testing 153.0.8010.12 on macOS. Tests enforce Trusted Types, use synthetic Meet-shaped participant tiles, and provide real local video streams. They cover extension loading, selection, native picture-in-picture, background/minimized-window survival, stream replacement, identity reuse, disappearing participants, ambiguous identity, disabled cameras, and cleanup. The minimized-window check verifies the floating window remains open with an active stream; it does not prove Google's servers will continue sending a live meeting stream. These fixtures do not establish compatibility with every live Meet rollout. The toolbar permission flow and a live call should be checked after installation.
 
 To run the browser checks, install Node.js, then run:
 

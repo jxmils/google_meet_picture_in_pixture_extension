@@ -1,11 +1,13 @@
 (() => {
   "use strict";
   if (location.origin !== "https://meet.google.com") return;
-  const key = "__meetPersonFloatV1";
+  const key = "__meetPersonFloatV2";
   if (window[key]) {
     window[key].showPicker();
     return;
   }
+  window.__meetPersonFloatV1?.stopFloating();
+  document.getElementById("meet-person-float-picker")?.remove();
 
   let picker = null;
   let floating = null;
@@ -47,7 +49,8 @@
       dismissPicker();
       const doc = pip.document;
       doc.title = "Selected person · Meet";
-      doc.head.innerHTML = `<meta name="color-scheme" content="dark"><style>
+      const style = doc.createElement("style");
+      style.textContent = `
         * { box-sizing: border-box; }
         html, body { margin: 0; height: 100%; background: #101721; color: #eff5fb; font: 13px system-ui, sans-serif; }
         body { display: flex; flex-direction: column; }
@@ -58,13 +61,28 @@
         video { width: 100%; height: 100%; object-fit: contain; }
         #status { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; background: #101721; line-height: 1.6; }
         #status[hidden] { display: none; }
-      </style>`;
-      doc.body.innerHTML = `<header><span>Selected person</span><button type="button">Close</button></header>
-        <main><video autoplay muted playsinline aria-label="Selected participant video"></video><div id="status" role="status">Waiting for this person's video…</div></main>`;
-      const mirror = doc.querySelector("video");
+      `;
+      doc.head.append(style);
+      const header = doc.createElement("header");
+      const title = doc.createElement("span");
+      title.textContent = "Selected person";
+      const close = doc.createElement("button");
+      close.type = "button";
+      close.textContent = "Close";
+      header.append(title, close);
+      const main = doc.createElement("main");
+      const mirror = doc.createElement("video");
+      mirror.autoplay = true;
+      mirror.playsInline = true;
+      mirror.setAttribute("aria-label", "Selected participant video");
       mirror.muted = true;
-      const status = doc.getElementById("status");
-      doc.querySelector("button").addEventListener("click", () => pip.close());
+      const status = doc.createElement("div");
+      status.id = "status";
+      status.setAttribute("role", "status");
+      status.textContent = "Waiting for this person's video…";
+      main.append(mirror, status);
+      doc.body.append(header, main);
+      close.addEventListener("click", () => pip.close());
       let currentSource = null;
       let currentTracks = [];
       let disposed = false;
@@ -146,7 +164,8 @@
     host.id = "meet-person-float-picker";
     host.style.cssText = "all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none;";
     const shadow = host.attachShadow({ mode: "open" });
-    shadow.innerHTML = `<style>
+    const style = document.createElement("style");
+    style.textContent = `
       * { box-sizing: border-box; font-family: system-ui, sans-serif; }
       .tile { position: fixed; border: 3px solid #99e6c1; border-radius: 12px; background: #102b1d33; color: #fff; cursor: pointer; pointer-events: auto; display: grid; place-items: center; }
       .tile:hover, .tile:focus-visible { background: #102b1d88; outline: 3px solid white; }
@@ -155,12 +174,23 @@
       strong { font-size: 17px; }
       p { margin: 10px 0 14px; font-size: 13px; line-height: 1.5; }
       .panel button { padding: 7px 12px; border: 1px solid #729283; border-radius: 7px; background: transparent; color: white; cursor: pointer; }
-    </style><div class="tiles"></div><section class="panel" role="dialog" aria-label="Choose a person">
-      <strong>Choose a person to keep in view</strong><p role="status"></p><button type="button">Cancel</button>
-    </section>`;
+    `;
+    const layer = document.createElement("div");
+    layer.className = "tiles";
+    const panel = document.createElement("section");
+    panel.className = "panel";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "Choose a person");
+    const title = document.createElement("strong");
+    title.textContent = "Choose a person to keep in view";
+    const message = document.createElement("p");
+    message.setAttribute("role", "status");
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    panel.append(title, message, cancel);
+    shadow.append(style, layer, panel);
     document.documentElement.append(host);
-    const layer = shadow.querySelector(".tiles");
-    const message = shadow.querySelector("p");
     const buttons = new Map();
     function refresh() {
       const visible = new Set();
@@ -176,7 +206,9 @@
           button = document.createElement("button");
           button.type = "button";
           button.className = "tile";
-          button.innerHTML = "<span>Float this person ↗</span>";
+          const label = document.createElement("span");
+          label.textContent = "Float this person ↗";
+          button.append(label);
           button.addEventListener("click", () => {
             // Recheck the live identity in case Meet reused the node after rendering the picker.
             if (participant(video) === id && videosFor(id).length === 1) openPerson(id);

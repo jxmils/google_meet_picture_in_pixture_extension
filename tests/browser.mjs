@@ -70,14 +70,23 @@ try {
   record('Chrome loaded the unpacked extension');
   // Loading a popup URL directly does not grant activeTab. Inject the exact bundled
   // picker here; the toolbar's user-granted permission is a separate manual check.
-  await page.evaluate(await readFile(path.join(root, 'picker.js'), 'utf8'));
+  await page.evaluate(await readFile(process.env.PICKER_PATH || path.join(root, 'picker.js'), 'utf8'));
   await page.locator('#meet-person-float-picker .tile').first().waitFor();
   record('Bundled picker highlights both participant tiles');
   assert.equal(await page.locator('#meet-person-float-picker .tile').count(), 2);
+  await page.evaluate(() => {
+    const copy = testSources.Alice.video.cloneNode(true);
+    copy.style.display = 'none'; copy.id = 'hidden-copy';
+    testSources.Alice.tile.append(copy);
+    (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker();
+  });
+  assert.equal(await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').count(), 1, 'A hidden duplicate must not remove the visible choice');
+  record('Hidden duplicate video does not suppress the person selector');
+  await page.evaluate(() => document.getElementById('hidden-copy').remove());
   async function chooseAlice() {
     await page.bringToFront();
-    await page.evaluate(() => window.__meetPersonFloatV3.showPicker());
-    await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').click();
+    await page.evaluate(() => (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker());
+    await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().click();
     await page.waitForFunction(() => document.pictureInPictureElement === testSources.Alice.video);
   }
   await chooseAlice();
@@ -110,8 +119,12 @@ try {
   await page.evaluate(() => { testSources.Alice.tile.dataset.participantId = 'Alice'; });
   await chooseAlice();
   await page.evaluate(() => { const clone = testSources.Alice.tile.cloneNode(true); clone.id = 'duplicate'; document.getElementById('tiles').append(clone); });
-  await page.waitForFunction(() => !document.pictureInPictureElement);
-  record('Ambiguous identity closes the video');
+  assert.equal(await page.evaluate(() => document.pictureInPictureElement === testSources.Alice.video), true);
+  await page.evaluate(() => (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker());
+  assert.equal(await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').count(), 2);
+  await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().click();
+  assert.equal(await page.evaluate(() => document.pictureInPictureElement === testSources.Alice.video), true);
+  record('Multiple tiles for the same participant keep the exact selected video');
   await page.evaluate(() => document.getElementById('duplicate').remove());
   await chooseAlice();
   await page.evaluate(() => { testSources.Alice.stream.getVideoTracks()[0].enabled = false; });
@@ -120,16 +133,111 @@ try {
   await page.evaluate(() => { testSources.Alice.stream.getVideoTracks()[0].enabled = true; testSources.Alice.video.disablePictureInPicture = true; });
   await chooseAlice();
   record('A Meet video marked disablePictureInPicture can still be explicitly selected');
-  if (process.env.PREVIEW_SECONDS) {
-    console.log('Native PiP preview ready');
-    await new Promise(resolve => setTimeout(resolve, Number(process.env.PREVIEW_SECONDS) * 1000));
-  }
   await page.evaluate(() => document.exitPictureInPicture());
   await page.waitForFunction(() => !document.pictureInPictureElement);
   assert.equal(await page.evaluate(() => testSources.Alice.stream.getVideoTracks()[0].readyState), 'live');
   assert.equal(await page.evaluate(() => testSources.Alice.video.disablePictureInPicture), true);
   record('Closing the video leaves Meet tracks live and restores its original PiP hint');
-  await page.evaluate(() => window.__meetPersonFloatV3.showPicker());
+
+  // An unavailable source must explain the failure across later refresh ticks.
+  await page.evaluate(() => {
+    testSources.Alice.video.srcObject = null;
+    (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker();
+  });
+  await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().click();
+  await new Promise(resolve => setTimeout(resolve, 700));
+  assert.match(await page.locator('#meet-person-float-picker [role="status"]').textContent(), /still loading|camera is off/);
+  assert.equal(await page.evaluate(() => !!document.pictureInPictureElement), false);
+  record('Unready video gives a persistent error instead of silently doing nothing');
+  await page.evaluate(() => { testSources.Alice.video.srcObject = testSources.Alice.stream; return testSources.Alice.video.play(); });
+  await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().click();
+  await page.waitForFunction(() => document.pictureInPictureElement === testSources.Alice.video);
+  record('A loading video can be retried successfully without reopening the picker');
+  await page.evaluate(() => document.exitPictureInPicture());
+
+  await page.evaluate(() => {
+    Object.defineProperty(testSources.Alice.stream.getVideoTracks()[0], 'muted', {configurable: true, value: true});
+  });
+  await chooseAlice();
+  record('A temporary track mute does not block an otherwise playable video');
+  await page.evaluate(() => {
+    delete testSources.Alice.stream.getVideoTracks()[0].muted;
+    return document.exitPictureInPicture();
+  });
+
+  await page.evaluate(() => {
+    testSources.Alice.video.requestPictureInPicture = () => Promise.reject(new DOMException('Test permission rejection', 'NotAllowedError'));
+    (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker();
+  });
+  await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().click();
+  await page.waitForFunction(() => document.getElementById('meet-person-float-picker')?.shadowRoot.querySelector('[role="status"]').textContent.includes('fresh click'));
+  await new Promise(resolve => setTimeout(resolve, 700));
+  assert.match(await page.locator('#meet-person-float-picker [role="status"]').textContent(), /fresh click/);
+  await page.evaluate(() => { delete testSources.Alice.video.requestPictureInPicture; });
+  await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().click();
+  await page.waitForFunction(() => document.pictureInPictureElement === testSources.Alice.video);
+  record('Native request rejection stays visible, and the next real click retries successfully');
+
+  // Switching must use the click directly, without waiting for explicit PiP teardown.
+  await page.evaluate(() => {
+    window.exitCalls = 0;
+    document.exitPictureInPicture = () => { window.exitCalls++; throw new Error('Should switch directly'); };
+    (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker();
+  });
+  await page.locator('#meet-person-float-picker .tile[data-participant="Bob"]').click();
+  await page.waitForFunction(() => document.pictureInPictureElement === testSources.Bob.video);
+  assert.equal(await page.evaluate(() => exitCalls), 0);
+  await page.evaluate(() => { delete document.exitPictureInPicture; });
+  record('Switching people requests native PiP directly without an intervening exit wait');
+  await page.evaluate(() => document.exitPictureInPicture());
+
+  // Keep the pressed button stable while Meet changes the source under it.
+  await page.evaluate(() => (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker());
+  let box = await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.evaluate(() => { testSources.Alice.tile.dataset.participantId = 'Carol'; });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  await page.mouse.up();
+  assert.equal(await page.evaluate(() => !!document.pictureInPictureElement), false);
+  assert.match(await page.locator('#meet-person-float-picker [role="status"]').textContent(), /changed this video tile/);
+  record('Identity change during a click is explained instead of silently selecting another person');
+  await page.evaluate(() => { testSources.Alice.tile.dataset.participantId = 'Alice'; });
+  await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().waitFor();
+  box = await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.evaluate(() => { testSources.Alice.video.style.transform = 'translateX(500px)'; });
+  await new Promise(resolve => setTimeout(resolve, 250));
+  await page.mouse.up();
+  assert.equal(await page.evaluate(() => !!document.pictureInPictureElement), false);
+  assert.match(await page.locator('#meet-person-float-picker [role="status"]').textContent(), /changed this video tile/);
+  record('Moving a tile during the click cannot select a stale overlay target');
+  await page.evaluate(() => { testSources.Alice.video.style.transform = ''; });
+  await chooseAlice();
+  await page.evaluate(() => document.exitPictureInPicture());
+
+  await page.evaluate(() => document.body.requestFullscreen());
+  await page.evaluate(() => (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker());
+  assert.equal(await page.evaluate(() => document.getElementById('meet-person-float-picker').matches(':popover-open')), true);
+  await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().click();
+  await page.waitForFunction(() => document.pictureInPictureElement === testSources.Alice.video);
+  record('Picker remains clickable above the fullscreen meeting layout');
+  await page.evaluate(() => { if (document.fullscreenElement) return document.exitFullscreen(); });
+  await page.evaluate(() => document.exitPictureInPicture());
+
+  await page.evaluate(() => {
+    const original = HTMLElement.prototype.showPopover;
+    HTMLElement.prototype.showPopover = () => { throw new Error('Test popover failure'); };
+    try { (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker(); }
+    finally { HTMLElement.prototype.showPopover = original; }
+  });
+  assert.equal(await page.evaluate(() => document.getElementById('meet-person-float-picker').hasAttribute('popover')), false);
+  await page.locator('#meet-person-float-picker .tile[data-participant="Alice"]').first().click();
+  await page.waitForFunction(() => document.pictureInPictureElement === testSources.Alice.video);
+  record('Fixed-position fallback remains clickable if the top-layer API fails');
+  await page.evaluate(() => document.exitPictureInPicture());
+  await page.evaluate(() => (window.__meetPersonFloatV4 || window.__meetPersonFloatV3).showPicker());
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('#meet-person-float-picker').count(), 0);
   record('Escape dismisses the picker');

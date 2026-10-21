@@ -1,11 +1,12 @@
 (() => {
   "use strict";
   if (location.origin !== "https://meet.google.com") return;
-  const key = "__meetPersonFloatV3";
+  const key = "__meetPersonFloatV4";
   if (window[key]) {
     window[key].showPicker();
     return;
   }
+  window.__meetPersonFloatV3?.stopFloating();
   window.__meetPersonFloatV1?.stopFloating();
   window.__meetPersonFloatV2?.stopFloating();
   document.getElementById("meet-person-float-picker")?.remove();
@@ -19,13 +20,22 @@
     return video.closest("[data-participant-id]")?.getAttribute("data-participant-id") || null;
   }
 
-  function videosFor(id) {
-    return [...document.querySelectorAll("video")].filter(video => participant(video) === id);
+  function videoTracks(video) {
+    const stream = video.srcObject;
+    return stream && typeof stream.getVideoTracks === "function" ? stream.getVideoTracks() : [];
+  }
+
+  function notice(message) {
+    if (!picker) return;
+    picker.notice = message;
+    picker.message.textContent = message;
   }
 
   function dismissPicker() {
     if (!picker) return;
     clearInterval(picker.timer);
+    window.removeEventListener("resize", picker.refresh);
+    document.removeEventListener("scroll", picker.refresh, true);
     document.removeEventListener("keydown", picker.onKey, true);
     picker.host.remove();
     picker = null;
@@ -35,26 +45,34 @@
     return floating?.stop();
   }
 
-  async function openPerson(id) {
+  async function openPerson(source, id) {
     if (opening) return;
     if (!document.pictureInPictureEnabled) {
-      picker.message.textContent = "Chrome's video picture-in-picture is unavailable. Check that picture-in-picture is allowed for Meet.";
+      notice("Chrome's video picture-in-picture is unavailable. Check that picture-in-picture is allowed for Meet.");
       return;
     }
-    const matches = videosFor(id);
-    const source = matches.length === 1 ? matches[0] : null;
-    if (!source || source.readyState < 2 || !source.srcObject?.getVideoTracks().some(track => track.readyState === "live" && track.enabled && !track.muted)) {
-      picker.message.textContent = "This person's video is not ready. Make sure their camera is on, pin their tile in Meet, then try again.";
+    if (!source.isConnected || participant(source) !== id) {
+      notice("Meet changed this video tile. Click the person's current video again.");
+      return;
+    }
+    if (source.readyState < 1 || !videoTracks(source).some(track => track.readyState === "live" && track.enabled)) {
+      notice("This person's video is still loading or their camera is off. Wait for their picture, then click again.");
+      return;
+    }
+    if (floating?.source === source && document.pictureInPictureElement === source) {
+      dismissPicker();
       return;
     }
     opening = true;
     const wasDisabled = source.disablePictureInPicture;
     let cleanup = null;
     try {
-      await stopFloating();
+      // Do not await closing the previous window: Chrome replaces it itself.
+      // Keep this request in the original click's transient user activation.
       source.disablePictureInPicture = false;
       // Native video PiP has no HTML header or website title bar. Chrome owns its
       // hover controls and window frame. Keep Meet's original element and tracks.
+      notice("Opening the floating video…");
       await source.requestPictureInPicture();
       dismissPicker();
       let disposed = false;
@@ -77,9 +95,8 @@
       };
       floating = { source, stop };
       function guardIdentity() {
-        const matches = videosFor(id);
-        const tracks = source.srcObject?.getVideoTracks() || [];
-        if (!source.isConnected || participant(source) !== id || matches.length !== 1 || matches[0] !== source || !tracks.some(track => track.readyState === "live" && track.enabled && !track.muted)) {
+        const tracks = videoTracks(source);
+        if (!source.isConnected || participant(source) !== id || !tracks.some(track => track.readyState === "live" && track.enabled)) {
           // Close rather than accidentally follow a recycled active-speaker tile.
           stop();
         }
@@ -94,7 +111,12 @@
       cleanup?.();
       if (wasDisabled) source.disablePictureInPicture = true;
       showPicker();
-      picker.message.textContent = `Could not open the floating video: ${error.message}. Click the person's tile to retry.`;
+      const messages = {
+        NotAllowedError: "Chrome needs a fresh click to open the floating video. Click 'Float this person' again.",
+        InvalidStateError: "This video is still loading. Wait for the person's picture, then click again.",
+        SecurityError: "Chrome is blocking picture-in-picture for this page. Check Meet's site permissions."
+      };
+      notice(messages[error.name] || `Could not open the floating video: ${error.message}. Click the person's tile to retry.`);
     } finally {
       opening = false;
     }
@@ -104,10 +126,12 @@
     dismissPicker();
     const host = document.createElement("div");
     host.id = "meet-person-float-picker";
-    host.style.cssText = "all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none;";
+    host.setAttribute("popover", "manual");
+    host.style.cssText = "all:initial;position:fixed;inset:0;width:100%;height:100%;margin:0;padding:0;border:0;background:transparent;overflow:visible;z-index:2147483647;pointer-events:none;";
     const shadow = host.attachShadow({ mode: "open" });
     const style = document.createElement("style");
     style.textContent = `
+      :host::backdrop { background: transparent; pointer-events: none; }
       * { box-sizing: border-box; font-family: system-ui, sans-serif; }
       .tile { position: fixed; border: 3px solid #99e6c1; border-radius: 12px; background: #102b1d33; color: #fff; cursor: pointer; pointer-events: auto; display: grid; place-items: center; }
       .tile:hover, .tile:focus-visible { background: #102b1d88; outline: 3px solid white; }
@@ -132,18 +156,26 @@
     cancel.textContent = "Cancel";
     panel.append(title, message, cancel);
     shadow.append(style, layer, panel);
-    document.documentElement.append(host);
+    (document.fullscreenElement || document.documentElement).append(host);
+    // A top-layer popover stays above Meet's fullscreen and layered layouts.
+    try { host.showPopover(); } catch { host.removeAttribute("popover"); }
     const buttons = new Map();
+    let pressed = null;
     function refresh() {
+      // Do not replace a pressed button between pointerdown and click.
+      if (pressed || picker?.host !== host) return;
       const visible = new Set();
       for (const video of document.querySelectorAll("video")) {
         const id = participant(video);
         const rect = video.getBoundingClientRect();
         if (!id || rect.width < 48 || rect.height < 48 || rect.bottom < 0 || rect.right < 0 || rect.top > innerHeight || rect.left > innerWidth || getComputedStyle(video).visibility === "hidden") continue;
-        // Ambiguous identities are not safe to follow when Meet rebuilds its layout.
-        if (videosFor(id).length !== 1) continue;
         visible.add(video);
         let button = buttons.get(video);
+        if (button && button.dataset.participant !== id) {
+          button.remove();
+          buttons.delete(video);
+          button = null;
+        }
         if (!button) {
           button = document.createElement("button");
           button.type = "button";
@@ -151,24 +183,31 @@
           const label = document.createElement("span");
           label.textContent = "Float this person ↗";
           button.append(label);
-          button.addEventListener("click", () => {
-            // Recheck the live identity in case Meet reused the node after rendering the picker.
-            if (participant(video) === id && videosFor(id).length === 1) openPerson(id);
-            else refresh();
+          button.addEventListener("pointerdown", () => { pressed = button; });
+          button.addEventListener("pointercancel", () => { pressed = null; refresh(); });
+          button.addEventListener("click", event => {
+            pressed = null;
+            // Open the exact clicked element. Hidden copies and camera/share tiles
+            // with the same participant ID must not veto a valid choice.
+            const bounds = video.getBoundingClientRect();
+            const moved = event.detail > 0 && (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom);
+            if (!video.isConnected || participant(video) !== id || moved) {
+              notice("Meet changed this video tile. Click the person's current video again.");
+              refresh();
+              return;
+            }
+            openPerson(video, id);
           });
           layer.append(button);
           buttons.set(video, button);
           button.dataset.participant = id;
-        } else if (button.dataset.participant !== id) {
-          button.remove();
-          buttons.delete(video);
-          continue;
         }
         Object.assign(button.style, { left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px` });
       }
       for (const [video, button] of buttons) {
         if (!visible.has(video)) { button.remove(); buttons.delete(video); }
       }
+      if (picker.notice) return;
       message.textContent = visible.size
         ? "Click a highlighted video. Drag the floating video to move it and resize it from an edge. Press Esc to cancel."
         : "No selectable camera tiles found. Join a call, make the person's camera tile visible, and pin it in Meet if needed.";
@@ -176,11 +215,15 @@
     const onKey = event => { if (event.key === "Escape") { event.stopPropagation(); dismissPicker(); } };
     document.addEventListener("keydown", onKey, true);
     shadow.querySelector(".panel button").addEventListener("click", dismissPicker);
-    picker = { host, message, onKey, timer: setInterval(refresh, 500) };
+    const releasePress = () => setTimeout(() => { pressed = null; refresh(); }, 0);
+    host.addEventListener("pointerup", releasePress);
+    window.addEventListener("resize", refresh);
+    document.addEventListener("scroll", refresh, true);
+    picker = { host, message, onKey, refresh, notice: null, timer: setInterval(refresh, 150) };
     refresh();
     shadow.querySelector(".tile, .panel button")?.focus();
   }
 
-  window[key] = { showPicker, stopFloating };
+  window[key] = { showPicker, stopFloating, dismissPicker };
   showPicker();
 })();
